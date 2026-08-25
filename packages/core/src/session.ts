@@ -88,6 +88,17 @@ type CompactInput = {
   prompt?: Prompt
 }
 
+type MessagesInput = {
+  sessionID: SessionSchema.ID
+  limit?: number
+  order?: "asc" | "desc"
+  seek?: number
+  cursor?: {
+    id: SessionMessage.ID
+    direction: "previous" | "next"
+  }
+}
+
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Session.NotFoundError", {
   sessionID: SessionSchema.ID,
 }) {}
@@ -114,15 +125,15 @@ export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<SessionSchema.Info[]>
   readonly create: (input: CreateInput) => Effect.Effect<SessionSchema.Info>
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<SessionSchema.Info, NotFoundError>
-  readonly messages: (input: {
-    sessionID: SessionSchema.ID
-    limit?: number
-    order?: "asc" | "desc"
-    cursor?: {
-      id: SessionMessage.ID
-      direction: "previous" | "next"
-    }
-  }) => Effect.Effect<SessionMessage.Message[], NotFoundError | MessageDecodeError>
+  readonly messages: (
+    input: MessagesInput,
+  ) => Effect.Effect<SessionMessage.Message[], NotFoundError | MessageDecodeError>
+  readonly messagePage: (
+    input: MessagesInput,
+  ) => Effect.Effect<
+    { data: SessionMessage.Message[]; range: { start: number; end: number; total: number } },
+    NotFoundError | MessageDecodeError
+  >
   readonly message: (input: {
     sessionID: SessionSchema.ID
     messageID: SessionMessage.ID
@@ -330,10 +341,49 @@ const layer = Layer.effect(
           .from(SessionMessageTable)
           .where(where)
           .orderBy(order === "asc" ? asc(SessionMessageTable.seq) : desc(SessionMessageTable.seq))
-        const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
+        const limited = input.limit === undefined ? query : query.limit(input.limit)
+        const rows = yield* (input.seek === undefined ? limited.all() : limited.offset(input.seek).all()).pipe(
           Effect.orDie,
         )
         return yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)
+      }),
+      messagePage: Effect.fn("V2Session.messagePage")(function* (input) {
+        const data = yield* result.messages(input)
+        const total = yield* db
+          .$count(SessionMessageTable, eq(SessionMessageTable.session_id, input.sessionID))
+          .pipe(Effect.orDie)
+        const first = data[0]
+        if (!first) {
+          const start = input.cursor
+            ? input.cursor.direction === "previous"
+              ? 0
+              : total
+            : Math.min(input.seek ?? 0, total)
+          return { data, range: { start, end: start, total } }
+        }
+        const start = input.cursor
+          ? yield* Effect.gen(function* () {
+              const anchor = yield* db
+                .select({ seq: SessionMessageTable.seq })
+                .from(SessionMessageTable)
+                .where(and(eq(SessionMessageTable.session_id, input.sessionID), eq(SessionMessageTable.id, first.id)))
+                .get()
+                .pipe(Effect.orDie)
+              if (!anchor) return 0
+              return yield* db
+                .$count(
+                  SessionMessageTable,
+                  and(
+                    eq(SessionMessageTable.session_id, input.sessionID),
+                    (input.order ?? "desc") === "asc"
+                      ? lt(SessionMessageTable.seq, anchor.seq)
+                      : gt(SessionMessageTable.seq, anchor.seq),
+                  ),
+                )
+                .pipe(Effect.orDie)
+            })
+          : (input.seek ?? 0)
+        return { data, range: { start, end: Math.min(start + data.length, total), total } }
       }),
       message: Effect.fn("V2Session.message")(function* (input) {
         const stored = yield* store.message(input.messageID)

@@ -33,16 +33,19 @@ export const MessageHandler = HttpApiBuilder.group(Api, "server.message", (handl
       Effect.fn(function* (ctx) {
         if (ctx.query.cursor && ctx.query.order !== undefined)
           return yield* new InvalidCursorError({ message: "Cursor cannot be combined with order" })
+        if (ctx.query.cursor && ctx.query.seek !== undefined)
+          return yield* new InvalidCursorError({ message: "Cursor cannot be combined with seek" })
         const decoded = yield* Effect.try({
           try: () => (ctx.query.cursor ? cursor.decode(ctx.query.cursor) : undefined),
           catch: () => new InvalidCursorError({ message: "Invalid cursor" }),
         })
         const order = decoded?.order ?? ctx.query.order ?? "desc"
-        const messages = yield* session
-          .messages({
+        const page = yield* session
+          .messagePage({
             sessionID: ctx.params.sessionID,
             limit: ctx.query.limit ?? DefaultMessagesLimit,
             order,
+            seek: ctx.query.seek,
             cursor: decoded ? { id: decoded.id, direction: decoded.direction } : undefined,
           })
           .pipe(
@@ -66,13 +69,14 @@ export const MessageHandler = HttpApiBuilder.group(Api, "server.message", (handl
               )
             }),
           )
-        const first = messages[0]
-        const last = messages.at(-1)
+        const first = page.data[0]
+        const last = page.data.at(-1)
         return {
-          data: messages,
+          data: page.data,
           cursor: {
             previous: first ? cursor.encode(first, order, "previous") : undefined,
             next: last ? cursor.encode(last, order, "next") : undefined,
+            range: page.range,
           },
         }
       }),

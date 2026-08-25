@@ -1,5 +1,6 @@
 import { Session } from "@opencode-ai/schema/session"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
+import { NonNegativeInt } from "@opencode-ai/schema/schema"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { InvalidCursorError, SessionNotFoundError, UnknownError } from "../errors"
@@ -19,6 +20,10 @@ export const SessionMessagesQuery = Schema.Struct({
         "Opaque pagination cursor returned as cursor.previous or cursor.next in the previous response. Do not combine with order.",
     }),
   ),
+  seek: Schema.NumberFromString.pipe(Schema.decodeTo(NonNegativeInt), Schema.optional).annotate({
+    description:
+      "Zero-based message rank in the requested order. Use this to open an unvisited position; do not combine with cursor.",
+  }),
 }).annotate({ identifier: "SessionMessagesQuery" })
 
 export const MessageGroup = HttpApiGroup.make("server.message")
@@ -31,6 +36,11 @@ export const MessageGroup = HttpApiGroup.make("server.message")
         cursor: Schema.Struct({
           previous: Schema.String.pipe(Schema.optional),
           next: Schema.String.pipe(Schema.optional),
+          range: Schema.Struct({
+            start: NonNegativeInt,
+            end: NonNegativeInt,
+            total: NonNegativeInt,
+          }).pipe(Schema.optional),
         }),
       }).annotate({ identifier: "SessionMessagesResponse" }),
       error: [InvalidCursorError, SessionNotFoundError, UnknownError],
@@ -39,7 +49,7 @@ export const MessageGroup = HttpApiGroup.make("server.message")
         identifier: "v2.session.messages",
         summary: "Get session messages",
         description:
-          "Retrieve projected messages for a session. Items keep the requested order across pages; use cursor.next or cursor.previous to move through the ordered timeline.",
+          "Retrieve projected messages for a session. Items keep the requested order across pages; use cursor.next or cursor.previous for sequential navigation and seek to open an unvisited rank. Range positions use a zero-based, end-exclusive interval in the requested order.",
       }),
     ),
   )
